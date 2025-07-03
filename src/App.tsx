@@ -1,52 +1,55 @@
-import React, { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Lobby } from './components/Lobby';
 import { Game } from './components/Game';
 import { FinalResults } from './components/FinalResults';
 import { useWebSocket } from './hooks/useWebSocket';
 
 function App() {
+  console.log('App component is rendering...');
+  
   const [gameState, setGameState] = useState('LOBBY');
   const [playerName, setPlayerName] = useState('');
   const [lobbyData, setLobbyData] = useState({ players: [], canStart: false });
-  const [gameData, setGameData] = useState(null);
-  const [finalResults, setFinalResults] = useState(null);
+  const [gameData, setGameData] = useState<any>(null);
+  const [finalResults, setFinalResults] = useState<any>(null);
+  const [connectionError, setConnectionError] = useState(false);
 
   const { ws, sendMessage } = useWebSocket('ws://localhost:3001', {
-    onLobbyUpdate: (data) => {
+    onLobbyUpdate: (data: any) => {
       setLobbyData(data);
       setGameState(data.status);
     },
-    onGameStart: (data) => {
+    onGameStart: (data: any) => {
       setGameData(data);
       setGameState('PLAYING');
     },
-    onGameUpdate: (data) => {
+    onGameUpdate: (data: any) => {
       setGameData(data);
     },
-    onRoundEnd: (data) => {
+    onRoundEnd: (data: any) => {
       setGameData(data);
       setGameState('ROUND_END');
     },
-    onNewRound: (data) => {
+    onNewRound: (data: any) => {
       setGameData(data);
       setGameState('PLAYING');
     },
-    onFinalResults: (data) => {
+    onFinalResults: (data: any) => {
       setFinalResults(data);
       setGameState('FINAL_RESULTS');
     },
-    onGameReset: (data) => {
+    onGameReset: (data: any) => {
       setLobbyData(data);
       setGameState('LOBBY');
       setGameData(null);
       setFinalResults(null);
     },
-    onCorrectGuess: (data) => {
+    onCorrectGuess: (data: any) => {
       setGameData(data.gameState);
     }
   });
 
-  const handleJoinLobby = (name) => {
+  const handleJoinLobby = (name: string) => {
     setPlayerName(name);
     sendMessage('JOIN_LOBBY', { playerName: name });
   };
@@ -55,14 +58,21 @@ function App() {
     sendMessage('START_GAME');
   };
 
-  const handleSubmitGuess = (guess) => {
+  const handleSubmitGuess = (guess: string) => {
     sendMessage('SUBMIT_GUESS', { guess });
   };
 
   if (!ws) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 flex items-center justify-center">
-        <div className="text-white text-xl">Connecting to game server...</div>
+        <div className="text-white text-xl">
+          <div className="text-center">
+            <div className="mb-4">Connecting to game server...</div>
+            <div className="text-sm text-white/70">
+              If this takes too long, check if the server is running on port 3001
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
