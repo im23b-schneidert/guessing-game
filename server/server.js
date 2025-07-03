@@ -8,16 +8,72 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
-const gameManager = new GameManager();
-
-// Store connected clients
+// Store multiple lobbies
+const lobbies = new Map();
+// Store connected clients with their lobby info
 const clients = new Map();
+
+// Helper function to generate a random lobby code
+function generateLobbyCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+// Helper function to create a new lobby
+function createLobby(lobbyCode) {
+  const gameManager = new GameManager();
+  
+  // Set up game event listeners for this lobby
+  gameManager.on('hintRevealed', () => {
+    broadcastToLobby(lobbyCode, {
+      type: 'GAME_UPDATE',
+      payload: gameManager.getGameState()
+    });
+  });
+
+  gameManager.on('roundEnd', () => {
+    broadcastToLobby(lobbyCode, {
+      type: 'ROUND_END',
+      payload: gameManager.getGameState()
+    });
+  });
+
+  gameManager.on('newRound', () => {
+    broadcastToLobby(lobbyCode, {
+      type: 'NEW_ROUND',
+      payload: gameManager.getGameState()
+    });
+  });
+
+  gameManager.on('finalResults', () => {
+    broadcastToLobby(lobbyCode, {
+      type: 'FINAL_RESULTS',
+      payload: gameManager.getFinalResults()
+    });
+  });
+
+  gameManager.on('gameReset', () => {
+    broadcastToLobby(lobbyCode, {
+      type: 'GAME_RESET',
+      payload: gameManager.getLobbyState()
+    });
+  });
+
+  gameManager.on('gameUpdate', () => {
+    broadcastToLobby(lobbyCode, {
+      type: 'GAME_UPDATE',
+      payload: gameManager.getGameState()
+    });
+  });
+
+  lobbies.set(lobbyCode, gameManager);
+  return gameManager;
+}
 
 wss.on('connection', (ws) => {
   const clientId = uuidv4();
   console.log('New client connected:', clientId);
   
-  clients.set(clientId, ws);
+  clients.set(clientId, { ws, lobbyCode: null });
   
   ws.on('message', (message) => {
     try {
@@ -30,9 +86,21 @@ wss.on('connection', (ws) => {
   
   ws.on('close', () => {
     console.log('Client disconnected:', clientId);
-    gameManager.removePlayer(clientId);
+    const clientData = clients.get(clientId);
+    if (clientData && clientData.lobbyCode) {
+      const gameManager = lobbies.get(clientData.lobbyCode);
+      if (gameManager) {
+        gameManager.removePlayer(clientId);
+        broadcastLobbyUpdate(clientData.lobbyCode);
+        
+        // Remove empty lobbies
+        if (gameManager.players.size === 0) {
+          lobbies.delete(clientData.lobbyCode);
+          console.log('Removed empty lobby:', clientData.lobbyCode);
+        }
+      }
+    }
     clients.delete(clientId);
-    broadcastLobbyUpdate();
   });
   
   ws.on('error', (error) => {
@@ -42,29 +110,119 @@ wss.on('connection', (ws) => {
 
 function handleMessage(clientId, data) {
   const { type, payload } = data;
+  const clientData = clients.get(clientId);
+  
+  console.log('Received message:', type, 'from client:', clientId, 'payload:', payload);
+  
+  if (!clientData) {
+    console.log('No client data found for:', clientId);
+    return;
+  }
   
   switch (type) {
+    case 'CREATE_LOBBY':
+      const newLobbyCode = generateLobbyCode();
+      const newGameManager = createLobby(newLobbyCode);
+      newGameManager.addPlayer(clientId, payload.playerName);
+      
+      clientData.lobbyCode = newLobbyCode;
+      
+      console.log('LOBBY CREATED:', newLobbyCode, 'by player:', payload.playerName);
+      console.log('Players in new lobby:', newGameManager.players.size);
+      
+      sendToClient(clientId, {
+        type: 'LOBBY_CREATED',
+        payload: { lobbyCode: newLobbyCode }
+      });
+      
+      broadcastLobbyUpdate(newLobbyCode);
+      break;
+      
     case 'JOIN_LOBBY':
-      gameManager.addPlayer(clientId, payload.playerName);
-      broadcastLobbyUpdate();
+      const { lobbyCode, playerName } = payload;
+      let joinGameManager = lobbies.get(lobbyCode);
+      
+      console.log('JOIN_LOBBY attempt:', playerName, 'trying to join', lobbyCode);
+      
+      if (!joinGameManager) {
+        console.log('Lobby not found:', lobbyCode);
+        sendToClient(clientId, {
+          type: 'ERROR',
+          payload: { message: 'Lobby not found' }
+        });
+        return;
+      }
+      
+      // Check if lobby is full or game is in progress
+      if (joinGameManager.players.size >= 8) {
+        console.log('Lobby is full:', lobbyCode);
+        sendToClient(clientId, {
+          type: 'ERROR',
+          payload: { message: 'Lobby is full' }
+        });
+        return;
+      }
+      
+      if (joinGameManager.gameState.status !== 'LOBBY') {
+        console.log('Game already in progress in lobby:', lobbyCode);
+        sendToClient(clientId, {
+          type: 'ERROR',
+          payload: { message: 'Game is already in progress' }
+        });
+        return;
+      }
+      
+      joinGameManager.addPlayer(clientId, playerName);
+      clientData.lobbyCode = lobbyCode;
+      
+      console.log('Player', playerName, 'successfully joined lobby:', lobbyCode);
+      console.log('Players in lobby now:', joinGameManager.players.size);
+      
+      sendToClient(clientId, {
+        type: 'LOBBY_JOINED',
+        payload: { lobbyCode }
+      });
+      
+      broadcastLobbyUpdate(lobbyCode);
       break;
       
     case 'START_GAME':
-      if (gameManager.canStartGame()) {
-        gameManager.startGame();
-        broadcastGameStart();
+      if (!clientData.lobbyCode) {
+        console.log('START_GAME: Client has no lobby code');
+        return;
+      }
+      const startGameManager = lobbies.get(clientData.lobbyCode);
+      if (startGameManager) {
+        console.log('START_GAME: Checking if can start game for lobby', clientData.lobbyCode);
+        console.log('Players in lobby:', startGameManager.players.size);
+        console.log('Game status:', startGameManager.gameState.status);
+        console.log('Can start game:', startGameManager.canStartGame());
+        
+        if (startGameManager.canStartGame()) {
+          console.log('Starting game for lobby:', clientData.lobbyCode);
+          startGameManager.startGame();
+          broadcastGameStart(clientData.lobbyCode);
+        } else {
+          console.log('Cannot start game - conditions not met');
+        }
+      } else {
+        console.log('START_GAME: No game manager found for lobby', clientData.lobbyCode);
       }
       break;
       
     case 'SUBMIT_GUESS':
-      const result = gameManager.submitGuess(clientId, payload.guess);
-      if (result.correct) {
-        broadcastCorrectGuess(clientId, payload.guess, result.points);
-      } else {
-        sendToClient(clientId, {
-          type: 'GUESS_FEEDBACK',
-          payload: { correct: false, guess: payload.guess }
-        });
+      if (!clientData.lobbyCode) return;
+      const guessGameManager = lobbies.get(clientData.lobbyCode);
+      if (guessGameManager) {
+        const result = guessGameManager.submitGuess(clientId, payload.guess);
+        if (result.correct) {
+          broadcastCorrectGuess(clientData.lobbyCode, clientId, payload.guess, result.points);
+        } else {
+          sendToClient(clientId, {
+            type: 'GUESS_FEEDBACK',
+            payload: { correct: false, guess: payload.guess }
+          });
+        }
       }
       break;
       
@@ -73,111 +231,56 @@ function handleMessage(clientId, data) {
   }
 }
 
-function broadcastLobbyUpdate() {
+function broadcastLobbyUpdate(lobbyCode) {
+  const gameManager = lobbies.get(lobbyCode);
+  if (!gameManager) return;
+  
   const lobbyState = gameManager.getLobbyState();
-  broadcast({
+  broadcastToLobby(lobbyCode, {
     type: 'LOBBY_UPDATE',
     payload: lobbyState
   });
 }
 
-function broadcastGameStart() {
+function broadcastGameStart(lobbyCode) {
+  const gameManager = lobbies.get(lobbyCode);
+  if (!gameManager) return;
+  
   const gameState = gameManager.getGameState();
-  broadcast({
+  broadcastToLobby(lobbyCode, {
     type: 'GAME_START',
     payload: gameState
   });
 }
 
-function broadcastCorrectGuess(playerId, guess, points) {
+function broadcastCorrectGuess(lobbyCode, playerId, guess, points) {
+  const gameManager = lobbies.get(lobbyCode);
+  if (!gameManager) return;
+  
   const gameState = gameManager.getGameState();
-  broadcast({
+  broadcastToLobby(lobbyCode, {
     type: 'CORRECT_GUESS',
     payload: { playerId, guess, points, gameState }
   });
 }
 
-function broadcastGameUpdate() {
-  const gameState = gameManager.getGameState();
-  broadcast({
-    type: 'GAME_UPDATE',
-    payload: gameState
-  });
-}
-
-function broadcastRoundEnd() {
-  const gameState = gameManager.getGameState();
-  broadcast({
-    type: 'ROUND_END',
-    payload: gameState
-  });
-}
-
-function broadcastNewRound() {
-  const gameState = gameManager.getGameState();
-  broadcast({
-    type: 'NEW_ROUND',
-    payload: gameState
-  });
-}
-
-function broadcastFinalResults() {
-  const finalResults = gameManager.getFinalResults();
-  broadcast({
-    type: 'FINAL_RESULTS',
-    payload: finalResults
-  });
-}
-
-function broadcastGameReset() {
-  const lobbyState = gameManager.getLobbyState();
-  broadcast({
-    type: 'GAME_RESET',
-    payload: lobbyState
-  });
-}
-
-function broadcast(message) {
-  clients.forEach((ws, clientId) => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify(message));
+function broadcastToLobby(lobbyCode, message) {
+  clients.forEach((clientData, clientId) => {
+    if (clientData.lobbyCode === lobbyCode && clientData.ws.readyState === clientData.ws.OPEN) {
+      clientData.ws.send(JSON.stringify(message));
     }
   });
 }
 
 function sendToClient(clientId, message) {
-  const ws = clients.get(clientId);
-  if (ws && ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify(message));
+  const clientData = clients.get(clientId);
+  if (clientData && clientData.ws && clientData.ws.readyState === clientData.ws.OPEN) {
+    clientData.ws.send(JSON.stringify(message));
   }
 }
-
-// Set up game event listeners
-gameManager.on('hintRevealed', () => {
-  broadcastGameUpdate();
-});
-
-gameManager.on('roundEnd', () => {
-  broadcastRoundEnd();
-});
-
-gameManager.on('newRound', () => {
-  broadcastNewRound();
-});
-
-gameManager.on('finalResults', () => {
-  broadcastFinalResults();
-});
-
-gameManager.on('gameReset', () => {
-  broadcastGameReset();
-});
-
-gameManager.on('gameUpdate', () => {
-  broadcastGameUpdate();
-});
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log('Multi-lobby word guessing game server started');
 });

@@ -34,7 +34,8 @@ export class GameManager extends EventEmitter {
   }
 
   canStartGame() {
-    return this.players.size >= 2 && this.gameState.status === 'LOBBY';
+    // Temporarily allow starting with just 1 player for testing
+    return this.players.size >= 1 && this.gameState.status === 'LOBBY';
   }
 
   startGame() {

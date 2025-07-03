@@ -38,6 +38,12 @@ export function useWebSocket(url: string, handlers: any) {
               case 'LOBBY_UPDATE':
                 handlersRef.current.onLobbyUpdate?.(payload);
                 break;
+              case 'LOBBY_CREATED':
+                handlersRef.current.onLobbyCreated?.(payload);
+                break;
+              case 'LOBBY_JOINED':
+                handlersRef.current.onLobbyJoined?.(payload);
+                break;
               case 'GAME_START':
                 handlersRef.current.onGameStart?.(payload);
                 break;
@@ -61,6 +67,9 @@ export function useWebSocket(url: string, handlers: any) {
                 break;
               case 'GUESS_FEEDBACK':
                 handlersRef.current.onGuessFeedback?.(payload);
+                break;
+              case 'ERROR':
+                handlersRef.current.onError?.(payload);
                 break;
             }
           } catch (error) {
